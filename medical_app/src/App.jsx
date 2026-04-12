@@ -1,5 +1,9 @@
 ﻿
 import React, { useState, useEffect, useContext, createContext, useCallback, useRef } from "react";
+import { Navigate, useLocation, useNavigate as useRouterNavigate } from "react-router-dom";
+import RoleSelect from "./pages/RoleSelect";
+import Login from "./pages/Login";
+import { ROLE_STORAGE_KEY } from "./pages/RoleSelect";
 /* ============================================================
    API LAYER - all fetch calls in one place
    Change BASE_URL to point at your backend
@@ -70,11 +74,45 @@ function useFetch(fn,interval=null){
    APP CONTEXT
    ============================================================ */
 const AppCtx=createContext();
+const AUTH_STORAGE_KEY="mediqueue_auth_role";
+const PATH_TO_PAGE={
+  "/":"home",
+  "/login":"login",
+  "/home":"home",
+  "/roles":"roleSelect",
+  "/patient/register":"form",
+  "/patient":"patientDash",
+  "/doctor":"doctorDash",
+  "/compounder":"compounderDash",
+};
+const PAGE_TO_PATH={
+  roleSelect:"/roles",
+  login:"/login",
+  home:"/home",
+  form:"/patient/register",
+  patientDash:"/patient",
+  doctorDash:"/doctor",
+  compounderDash:"/compounder",
+};
+
 function AppProvider({children}){
-  const[page,setPage]=useState("home");
+  const location=useLocation();
+  const routerNavigate=useRouterNavigate();
+  const page=PATH_TO_PAGE[location.pathname]||"home";
+  const authRole=localStorage.getItem(AUTH_STORAGE_KEY);
   const[currentPatient,setCurrentPatient]=useState(null);
-  const navigate=useCallback(p=>{setPage(p);window.scrollTo(0,0);},[]);
-  return <AppCtx.Provider value={{page,navigate,currentPatient,setCurrentPatient}}>{children}</AppCtx.Provider>;
+  const navigate=useCallback(p=>{
+    routerNavigate(PAGE_TO_PATH[p]||"/home");
+    window.scrollTo(0,0);
+  },[routerNavigate]);
+  const logout=useCallback(()=>{
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(ROLE_STORAGE_KEY);
+    setCurrentPatient(null);
+    routerNavigate("/");
+    window.scrollTo(0,0);
+  },[routerNavigate]);
+  return <AppCtx.Provider value={{page,navigate,authRole,logout,currentPatient,setCurrentPatient}}>{children}</AppCtx.Provider>;
 }
 const useApp=()=>useContext(AppCtx);
 
@@ -157,8 +195,13 @@ function PollBadge(){
 }
 
 function Navbar(){
-  const{navigate,page}=useApp();
-  const links=[{label:"Home",p:"home"},{label:"Doctor",p:"doctorDash"},{label:"Compounder",p:"compounderDash"}];
+  const{navigate,page,authRole,logout}=useApp();
+  const roleLinks={
+    patient:[{label:"Patient",p:"patientDash"}],
+    doctor:[{label:"Doctor",p:"doctorDash"}],
+    compounder:[{label:"Compounder",p:"compounderDash"}],
+  };
+  const links=[{label:"Home",p:"home"},...(roleLinks[authRole]||[])];
   return(
     <nav className="navbar">
       <div className="mw7 ni">
@@ -170,7 +213,8 @@ function Navbar(){
           {links.map(l=>(
             <button key={l.p} className={`nl ${page===l.p?"active":""}`} onClick={()=>navigate(l.p)}>{l.label}</button>
           ))}
-          <button className="ncta" onClick={()=>navigate("form")}>Book Appointment</button>
+          {authRole==="patient"&&<button className="ncta" onClick={()=>navigate("form")}>Book Appointment</button>}
+          {authRole&&<button className="nl" onClick={logout}>Logout</button>}
         </div>
       </div>
     </nav>
@@ -181,13 +225,26 @@ function Navbar(){
    PAGE: HOME
    ============================================================ */
 function Home(){
-  const{navigate}=useApp();
+  const{navigate,authRole}=useApp();
   const{data,loading}=useFetch(()=>api.getPatients());
   const wc=data?data.patients.filter(p=>p.status==="waiting").length:"-";
+  const rolePage={patient:"form",doctor:"doctorDash",compounder:"compounderDash"};
+  const selectRole=(role)=>{
+    if(authRole&&authRole!==role){
+      window.alert("Please logout before switching to another portal.");
+      return;
+    }
+    localStorage.setItem(ROLE_STORAGE_KEY,role);
+    if(authRole===role){
+      navigate(rolePage[role]);
+      return;
+    }
+    navigate("login");
+  };
   const portals=[
-    {title:"Patient",sub:"Book an appointment and track your queue",page:"form",color:"t",badge:"Book Now",bc:"pbt",ic:"pit",cc:"pct",ac:"pat",icon:IC.user},
-    {title:"Doctor",sub:"Manage patient queue and update consultation status",page:"doctorDash",color:"b",badge:"Staff",bc:"pbb",ic:"pib",cc:"pcb",ac:"pab",icon:IC.clip},
-    {title:"Compounder",sub:"Verify patients and manage arrival check-in",page:"compounderDash",color:"v",badge:"Staff",bc:"pbv",ic:"piv",cc:"pcv",ac:"pav",icon:IC.shield},
+    {title:"Patient",role:"patient",sub:"Book an appointment and track your queue",color:"t",badge:"Book Now",bc:"pbt",ic:"pit",cc:"pct",ac:"pat",icon:IC.user},
+    {title:"Doctor",role:"doctor",sub:"Manage patient queue and update consultation status",color:"b",badge:"Staff",bc:"pbb",ic:"pib",cc:"pcb",ac:"pab",icon:IC.clip},
+    {title:"Compounder",role:"compounder",sub:"Verify patients and manage arrival check-in",color:"v",badge:"Staff",bc:"pbv",ic:"piv",cc:"pcv",ac:"pav",icon:IC.shield},
   ];
   return(
     <div className="fadein">
@@ -201,7 +258,7 @@ function Home(){
           </div>
           <h1 className="htitle">Smart Medical<br/><span className="hacc">Appointment System</span></h1>
           <p className="hsub">A unified platform for patients, doctors, and staff - real-time queue tracking powered by live backend APIs.</p>
-          <button className="btn bt" style={{fontSize:"1rem",padding:".875rem 2rem"}} onClick={()=>navigate("form")}>
+          <button className="btn bt" style={{fontSize:"1rem",padding:".875rem 2rem"}} onClick={()=>selectRole("patient")}>
             Book an Appointment <Icon d={IC.arrow} size={16} stroke="#fff" sw={2.5}/>
           </button>
         </div>
@@ -211,7 +268,7 @@ function Home(){
         <p style={{fontSize:".875rem",color:"#94a3b8",textAlign:"center",marginBottom:"2.5rem"}}>Choose your role to access the live dashboard</p>
         <div className="pgrid">
           {portals.map(p=>(
-            <div key={p.title} className={`pcard ${p.cc}`} onClick={()=>navigate(p.page)}>
+            <div key={p.title} className={`pcard ${p.cc}`} onClick={()=>selectRole(p.role)}>
               <div className="ptop">
                 <div className={`pic ${p.ic}`}><Icon d={p.icon} size={24}/></div>
                 <span className={`pbadge ${p.bc}`}>{p.badge}</span>
@@ -731,12 +788,28 @@ function PVCard({patient:p,onVerify,isLoad}){
   );
 }
 
+function ProtectedPage({role,children}){
+  const{authRole}=useApp();
+  if(authRole===role)return children;
+  if(authRole)return <Navigate to="/" replace/>;
+  localStorage.setItem(ROLE_STORAGE_KEY,role);
+  return <Navigate to="/login" replace/>;
+}
+
 /* ============================================================
    ROOT
    ============================================================ */
 function Router(){
   const{page}=useApp();
-  const pages={home:<Home/>,form:<PatientForm/>,patientDash:<PatientDashboard/>,doctorDash:<DoctorDashboard/>,compounderDash:<CompounderDashboard/>};
+  const pages={
+    roleSelect:<RoleSelect/>,
+    login:<Login/>,
+    home:<Home/>,
+    form:<ProtectedPage role="patient"><PatientForm/></ProtectedPage>,
+    patientDash:<ProtectedPage role="patient"><PatientDashboard/></ProtectedPage>,
+    doctorDash:<ProtectedPage role="doctor"><DoctorDashboard/></ProtectedPage>,
+    compounderDash:<ProtectedPage role="compounder"><CompounderDashboard/></ProtectedPage>,
+  };
   return pages[page]||<Home/>;
 }
 export default function App(){ return <AppProvider><Router/></AppProvider>; }
