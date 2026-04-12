@@ -1,13 +1,14 @@
 /**
- * app.js — Express Application Factory
+ * app.js — Express Application Factory (MongoDB edition)
  *
- * Creates and configures the Express app.
- * Kept separate from server.js so the app can be imported in tests
- * without actually binding to a port.
+ * Sets up middleware and routes.
+ * DB connection happens in server.js before this app starts listening,
+ * so every request is guaranteed to have a live DB connection.
  */
 
-const express = require("express");
-const logger  = require("./middleware/logger");
+const express         = require("express");
+const logger          = require("./middleware/logger");
+const { dbStatus }    = require("./config/database");
 
 const app = express();
 
@@ -15,13 +16,8 @@ const app = express();
 // Global Middleware
 // ---------------------------------------------------------------------------
 
-// Parse incoming JSON request bodies
 app.use(express.json());
-
-// Parse URL-encoded form bodies (e.g. from HTML forms)
 app.use(express.urlencoded({ extended: true }));
-
-// Log every request to stdout
 app.use(logger);
 
 // ---------------------------------------------------------------------------
@@ -29,35 +25,32 @@ app.use(logger);
 // ---------------------------------------------------------------------------
 
 const patientRoutes = require("./routes/patientRoutes");
-
-// All patient-related routes live under /api/patients
 app.use("/api/patients", patientRoutes);
 
 // ---------------------------------------------------------------------------
-// Health Check
+// Health Check — now includes MongoDB connection status
 // ---------------------------------------------------------------------------
 
-/**
- * GET /health
- * Simple liveness probe — useful for load balancers and Docker health checks.
- */
 app.get("/health", (req, res) => {
-  res.json({
-    status:    "ok",
+  const db = dbStatus();
+  res.status(db === "connected" ? 200 : 503).json({
+    status:    db === "connected" ? "ok" : "degraded",
     service:   "Medical Appointment API",
+    database:  db,                        // "connected" | "disconnected" | …
     timestamp: new Date().toISOString(),
     uptime:    `${Math.floor(process.uptime())}s`,
   });
 });
 
 // ---------------------------------------------------------------------------
-// Root info
+// Root — API directory
 // ---------------------------------------------------------------------------
 
 app.get("/", (req, res) => {
   res.json({
-    name:    "MediQueue API",
-    version: "1.0.0",
+    name:     "MediQueue API",
+    version:  "2.0.0",
+    database: "MongoDB (Mongoose)",
     endpoints: {
       health:   "GET  /health",
       patients: {
@@ -73,7 +66,7 @@ app.get("/", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// 404 handler — catches any route not matched above
+// 404 handler
 // ---------------------------------------------------------------------------
 
 app.use((req, res) => {
@@ -85,7 +78,7 @@ app.use((req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Global error handler — catches any unhandled errors thrown in controllers
+// Global error handler
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line no-unused-vars

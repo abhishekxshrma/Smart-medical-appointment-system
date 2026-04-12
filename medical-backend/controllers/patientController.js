@@ -1,75 +1,89 @@
 /**
- * controllers/patientController.js — Patient Business Logic
+ * controllers/patientController.js — Patient Business Logic (MongoDB edition)
  *
- * Each function here corresponds to one API endpoint.
- * Controllers:
- *   1. Read from / write to the in-memory store (db.js)
- *   2. Apply business rules (priority engine, ETA calculator)
- *   3. Return standardised responses via the response helper
+ * Every function is now async because Mongoose operations return Promises.
+ * The API contract (URLs, request shapes, response shapes) is identical to
+ * the in-memory version — only the data layer changed.
  *
- * They do NOT touch Express routing — that lives in routes/patientRoutes.js
+ * Data flow per request:
+ *   HTTP request -> route -> (validate middleware) -> controller -> Mongoose -> MongoDB
+ *                                                         |
+ *                                                  response helper -> HTTP response
  */
 
-const { v4: uuidv4 }               = require("uuid");
-const { patients, generateToken }  = require("../db");
+const Patient                            = require("../models/Patient");
 const { assignPriority, priorityReason } = require("../utils/priorityEngine");
-const { calculateETA }             = require("../utils/etaCalculator");
-const { sendSuccess, sendError }   = require("../utils/response");
+const { calculateETA }                   = require("../utils/etaCalculator");
+const { sendSuccess, sendError }         = require("../utils/response");
+
+// Priority sort order for returning patient lists
+const PRIORITY_ORDER = { emergency: 0, high: 1, normal: 2 };
+
+/**
+ * Sort patients: emergency first, then high, then normal.
+ * Within the same priority, earlier registrations come first.
+ */
+function sortByPriority(patients) {
+  return patients.sort((a, b) => {
+    const pdiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+    if (pdiff !== 0) return pdiff;
+    return new Date(a.createdAt) - new Date(b.createdAt);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/patients
 // ---------------------------------------------------------------------------
 
 /**
- * Return all patients, with optional query-string filters.
+ * Return all patients with optional query-string filters.
  *
  * Query params (all optional):
  *   ?status=waiting|verified|in-progress|completed
  *   ?priority=normal|high|emergency
  *   ?department=<string>
- *
- * Response: sorted by priority (emergency first) then registration time.
  */
-function getAllPatients(req, res) {
-  let result = [...patients];
+async function getAllPatients(req, res) {
+  try {
+    const { status, priority, department } = req.query;
 
-  // ── Apply filters ────────────────────────────────────────────────────
-  const { status, priority, department } = req.query;
+    // Build Mongoose filter object from query params
+    const filter = {};
 
-  if (status) {
-    const allowed = ["waiting", "verified", "in-progress", "completed"];
-    if (!allowed.includes(status)) {
-      return sendError(res, "INVALID_FILTER", `'status' must be one of: ${allowed.join(", ")}`);
+    if (status) {
+      const allowed = ["waiting", "verified", "in-progress", "completed"];
+      if (!allowed.includes(status)) {
+        return sendError(res, "INVALID_FILTER", `'status' must be one of: ${allowed.join(", ")}`);
+      }
+      filter.status = status;
     }
-    result = result.filter((p) => p.status === status);
-  }
 
-  if (priority) {
-    const allowed = ["normal", "high", "emergency"];
-    if (!allowed.includes(priority)) {
-      return sendError(res, "INVALID_FILTER", `'priority' must be one of: ${allowed.join(", ")}`);
+    if (priority) {
+      const allowed = ["normal", "high", "emergency"];
+      if (!allowed.includes(priority)) {
+        return sendError(res, "INVALID_FILTER", `'priority' must be one of: ${allowed.join(", ")}`);
+      }
+      filter.priority = priority;
     }
-    result = result.filter((p) => p.priority === priority);
-  }
 
-  if (department) {
-    result = result.filter(
-      (p) => p.department.toLowerCase() === department.toLowerCase()
+    if (department) {
+      // Case-insensitive regex match
+      filter.department = { $regex: new RegExp(`^${department}$`, "i") };
+    }
+
+    // Fetch from MongoDB — Mongoose Documents serialise with our toJSON transform
+    const patients = await Patient.find(filter);
+    const sorted   = sortByPriority(patients);
+
+    return sendSuccess(
+      res,
+      { total: sorted.length, patients: sorted },
+      "Patients retrieved successfully"
     );
+  } catch (err) {
+    console.error("[getAllPatients]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
   }
-
-  // ── Sort: emergency → high → normal, then by registration time ───────
-  const PRIORITY_ORDER = { emergency: 0, high: 1, normal: 2 };
-  result.sort((a, b) => {
-    const pdiff = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-    if (pdiff !== 0) return pdiff;
-    return new Date(a.registeredAt) - new Date(b.registeredAt);
-  });
-
-  return sendSuccess(res, {
-    total: result.length,
-    patients: result,
-  }, "Patients retrieved successfully");
 }
 
 // ---------------------------------------------------------------------------
@@ -79,55 +93,62 @@ function getAllPatients(req, res) {
 /**
  * Register a new patient.
  *
- * Body (validated by middleware):
- *   { name, age, symptoms, department? }
- *
- * The controller:
- *   1. Generates a unique token and UUID
- *   2. Runs the priority engine to auto-assign priority
- *   3. Calculates ETA based on current queue length
- *   4. Inserts the new patient into the store
- *
- * Response: 201 Created with the full patient object
+ * Steps:
+ *   1. Run priority engine  (age + symptoms -> normal / high / emergency)
+ *   2. Count active patients to calculate the ETA slot
+ *   3. Generate the next sequential token  (T-001, T-002, ...)
+ *   4. Save new Patient document to MongoDB
  */
-function registerPatient(req, res) {
-  const {
-    name,
-    age,
-    symptoms,
-    department = "General Medicine",
-  } = req.body;
+async function registerPatient(req, res) {
+  try {
+    const {
+      name,
+      age,
+      symptoms,
+      department = "General Medicine",
+    } = req.body;
 
-  // ── Priority assignment ─────────────────────────────────────────────
-  const parsedAge    = Number(age);
-  const priority     = assignPriority(parsedAge, symptoms);
-  const reason       = priorityReason(parsedAge, symptoms);
+    const parsedAge = Number(age);
 
-  // ── ETA: based on how many active (non-completed) patients are ahead ─
-  const activeCount  = patients.filter((p) => p.status !== "completed").length;
-  const estimatedTime = calculateETA(activeCount);
+    // Auto-assign priority from age + symptom keywords
+    const priority = assignPriority(parsedAge, symptoms);
+    const reason   = priorityReason(parsedAge, symptoms);
 
-  // ── Build patient record ────────────────────────────────────────────
-  const newPatient = {
-    id:            uuidv4(),
-    token:         generateToken(),
-    name:          name.trim(),
-    age:           parsedAge,
-    symptoms:      symptoms.trim(),
-    department,
-    priority,
-    priorityReason: reason,        // audit trail for priority decision
-    status:        "waiting",
-    estimatedTime,
-    registeredAt:  new Date().toISOString(),
-    verifiedAt:    null,
-    startedAt:     null,
-    completedAt:   null,
-  };
+    // Calculate ETA based on how many patients are still active (not completed)
+    const activeCount   = await Patient.countActive();
+    const estimatedTime = calculateETA(activeCount);
 
-  patients.push(newPatient);
+    // Generate next token string (T-001, T-002, ...)
+    const token = await Patient.generateToken();
 
-  return sendSuccess(res, newPatient, "Patient registered successfully", 201);
+    // Persist to MongoDB
+    const newPatient = await Patient.create({
+      token,
+      name:           name.trim(),
+      age:            parsedAge,
+      symptoms:       symptoms.trim(),
+      department,
+      priority,
+      priorityReason: reason,
+      estimatedTime,
+      // status defaults to "waiting" per schema
+      // createdAt / updatedAt added automatically by { timestamps: true }
+    });
+
+    return sendSuccess(res, newPatient, "Patient registered successfully", 201);
+  } catch (err) {
+    // Mongoose schema validation failure
+    if (err.name === "ValidationError") {
+      const messages = Object.values(err.errors).map((e) => e.message).join(". ");
+      return sendError(res, "VALIDATION_ERROR", messages, 422);
+    }
+    // Duplicate key on token field (extremely rare race condition)
+    if (err.code === 11000) {
+      return sendError(res, "DUPLICATE_TOKEN", "Token collision — please retry", 409);
+    }
+    console.error("[registerPatient]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,135 +156,154 @@ function registerPatient(req, res) {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch a single patient by their UUID.
+ * Fetch a single patient by their MongoDB ObjectId.
+ * The frontend receives `id` (not `_id`) thanks to the toJSON transform in the schema.
  */
-function getPatientById(req, res) {
-  const patient = patients.find((p) => p.id === req.params.id);
+async function getPatientById(req, res) {
+  try {
+    const patient = await Patient.findById(req.params.id);
 
-  if (!patient) {
-    return sendError(res, "NOT_FOUND", `No patient found with id '${req.params.id}'`, 404);
+    if (!patient) {
+      return sendError(res, "NOT_FOUND", `No patient found with id '${req.params.id}'`, 404);
+    }
+
+    return sendSuccess(res, patient, "Patient retrieved successfully");
+  } catch (err) {
+    // CastError = req.params.id is not a valid ObjectId format
+    if (err.name === "CastError") {
+      return sendError(res, "INVALID_ID", `'${req.params.id}' is not a valid patient id`, 400);
+    }
+    console.error("[getPatientById]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
   }
-
-  return sendSuccess(res, patient, "Patient retrieved successfully");
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper: find patient or return 404
+// Shared internal helper
 // ---------------------------------------------------------------------------
 
 /**
- * Internal helper used by all update controllers.
- * Returns the patient object or sends a 404 and returns null.
- *
- * @param {import('express').Request}  req
- * @param {import('express').Response} res
- * @returns {object|null}
+ * Find a patient by id and return the Mongoose Document.
+ * If not found (or id is malformed), sends the error response and returns null.
+ * Callers MUST check for null before continuing.
  */
-function findPatientOrFail(req, res) {
-  const patient = patients.find((p) => p.id === req.params.id);
-  if (!patient) {
-    sendError(res, "NOT_FOUND", `No patient found with id '${req.params.id}'`, 404);
+async function findPatientOrFail(req, res) {
+  try {
+    const patient = await Patient.findById(req.params.id);
+    if (!patient) {
+      sendError(res, "NOT_FOUND", `No patient found with id '${req.params.id}'`, 404);
+      return null;
+    }
+    return patient;
+  } catch (err) {
+    if (err.name === "CastError") {
+      sendError(res, "INVALID_ID", `'${req.params.id}' is not a valid patient id`, 400);
+    } else {
+      sendError(res, "SERVER_ERROR", err.message, 500);
+    }
     return null;
   }
-  return patient;
 }
 
 // ---------------------------------------------------------------------------
-// PUT /api/patients/:id/verify      (Compounder action)
+// PUT /api/patients/:id/verify   (Compounder action)
 // ---------------------------------------------------------------------------
 
 /**
- * Compounder marks a patient as physically present and verified.
- *
- * Allowed transition:  waiting → verified
- *
- * Business rules:
- *   - Can only verify a patient who is currently "waiting"
- *   - Records the exact timestamp of verification
+ * Compounder marks patient as physically present and verified.
+ * Transition: waiting -> verified
  */
-function verifyPatient(req, res) {
-  const patient = findPatientOrFail(req, res);
-  if (!patient) return;
+async function verifyPatient(req, res) {
+  try {
+    const patient = await findPatientOrFail(req, res);
+    if (!patient) return;
 
-  // Guard: only "waiting" patients can be verified
-  if (patient.status !== "waiting") {
-    return sendError(
-      res,
-      "INVALID_TRANSITION",
-      `Cannot verify a patient with status '${patient.status}'. Only 'waiting' patients can be verified.`
-    );
+    if (patient.status !== "waiting") {
+      return sendError(
+        res,
+        "INVALID_TRANSITION",
+        `Cannot verify a patient with status '${patient.status}'. Only 'waiting' patients can be verified.`
+      );
+    }
+
+    // Mutate the Mongoose Document then save() so validators + updatedAt fire
+    patient.status     = "verified";
+    patient.verifiedAt = new Date();
+    await patient.save();
+
+    return sendSuccess(res, patient, `Patient ${patient.token} verified successfully`);
+  } catch (err) {
+    console.error("[verifyPatient]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
   }
-
-  patient.status     = "verified";
-  patient.verifiedAt = new Date().toISOString();
-
-  return sendSuccess(res, patient, `Patient ${patient.token} verified successfully`);
 }
 
 // ---------------------------------------------------------------------------
-// PUT /api/patients/:id/start       (Doctor action)
+// PUT /api/patients/:id/start   (Doctor action)
 // ---------------------------------------------------------------------------
 
 /**
- * Doctor begins a consultation with the patient.
- *
- * Allowed transition:  verified → in-progress
- *
- * Business rules:
- *   - Only verified (compounder-checked) patients can start
- *   - Unverified patients cannot jump directly to consultation
+ * Doctor begins a consultation.
+ * Transition: verified -> in-progress
+ * Guard: patient must have been compounder-verified first.
  */
-function startConsultation(req, res) {
-  const patient = findPatientOrFail(req, res);
-  if (!patient) return;
+async function startConsultation(req, res) {
+  try {
+    const patient = await findPatientOrFail(req, res);
+    if (!patient) return;
 
-  // Guard: must be verified before doctor can start
-  if (patient.status !== "verified") {
-    return sendError(
-      res,
-      "INVALID_TRANSITION",
-      `Cannot start consultation for status '${patient.status}'. Patient must be 'verified' first.`
-    );
+    if (patient.status !== "verified") {
+      return sendError(
+        res,
+        "INVALID_TRANSITION",
+        `Cannot start consultation for status '${patient.status}'. Patient must be 'verified' first.`
+      );
+    }
+
+    patient.status    = "in-progress";
+    patient.startedAt = new Date();
+    await patient.save();
+
+    return sendSuccess(res, patient, `Consultation started for patient ${patient.token}`);
+  } catch (err) {
+    console.error("[startConsultation]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
   }
-
-  patient.status    = "in-progress";
-  patient.startedAt = new Date().toISOString();
-
-  return sendSuccess(res, patient, `Consultation started for patient ${patient.token}`);
 }
 
 // ---------------------------------------------------------------------------
-// PUT /api/patients/:id/complete    (Doctor action)
+// PUT /api/patients/:id/complete   (Doctor action)
 // ---------------------------------------------------------------------------
 
 /**
- * Doctor marks consultation as complete.
- *
- * Allowed transition:  in-progress → completed
- *
- * Business rules:
- *   - Only in-progress consultations can be completed
- *   - Records the exact completion timestamp
+ * Doctor marks a consultation as complete.
+ * Transition: in-progress -> completed
  */
-function completeConsultation(req, res) {
-  const patient = findPatientOrFail(req, res);
-  if (!patient) return;
+async function completeConsultation(req, res) {
+  try {
+    const patient = await findPatientOrFail(req, res);
+    if (!patient) return;
 
-  // Guard: consultation must be in-progress to complete
-  if (patient.status !== "in-progress") {
-    return sendError(
-      res,
-      "INVALID_TRANSITION",
-      `Cannot complete consultation for status '${patient.status}'. Patient must be 'in-progress'.`
-    );
+    if (patient.status !== "in-progress") {
+      return sendError(
+        res,
+        "INVALID_TRANSITION",
+        `Cannot complete consultation for status '${patient.status}'. Patient must be 'in-progress'.`
+      );
+    }
+
+    patient.status      = "completed";
+    patient.completedAt = new Date();
+    await patient.save();
+
+    return sendSuccess(res, patient, `Consultation completed for patient ${patient.token}`);
+  } catch (err) {
+    console.error("[completeConsultation]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
   }
-
-  patient.status      = "completed";
-  patient.completedAt = new Date().toISOString();
-
-  return sendSuccess(res, patient, `Consultation completed for patient ${patient.token}`);
 }
 
+// Same export names as before — routes/patientRoutes.js needs zero changes
 module.exports = {
   getAllPatients,
   registerPatient,
