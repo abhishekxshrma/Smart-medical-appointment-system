@@ -24,6 +24,7 @@ const router  = express.Router();
 
 // Middleware
 const { validateNewPatient } = require("../middleware/validate");
+const auth = require("../middleware/auth");
 
 // Controller functions
 const {
@@ -34,6 +35,9 @@ const {
   startConsultation,
   completeConsultation,
 } = require("../controllers/patientController");
+
+// Require authentication for all patient routes
+router.use(auth);
 
 // ---------------------------------------------------------------------------
 // Patient CRUD

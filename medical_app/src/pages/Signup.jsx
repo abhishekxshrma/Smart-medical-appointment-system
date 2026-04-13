@@ -35,7 +35,7 @@ const ROLE_META = {
 
 const AUTH_STORAGE_KEY = "mediqueue_auth_role";
 
-export default function Login() {
+export default function Signup() {
   const navigate = useNavigate();
   const storedRole = localStorage.getItem(ROLE_STORAGE_KEY);
   const role = storedRole && ROLE_REDIRECT[storedRole] ? storedRole : null;
@@ -66,15 +66,15 @@ export default function Login() {
       return;
     }
 
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const result = await api.login({ email: email.trim(), password });
+      const result = await api.signup({ email: email.trim(), password, role });
       
-      // Ensure the user is logging into the correct portal
-      if (result.user.role !== role) {
-        throw new Error(`Role mismatch. This email is registered as a ${result.user.role}.`);
-      }
-
       // Save auth tokens
       localStorage.setItem("mediqueue_token", result.token);
       localStorage.setItem(AUTH_STORAGE_KEY, result.user.role);
@@ -82,7 +82,7 @@ export default function Login() {
       // Navigate to respective dashboard
       navigate(ROLE_REDIRECT[result.user.role] || "/home");
     } catch (err) {
-      setError(err.message || "Invalid email or password.");
+      setError(err.message || "Failed to sign up. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -235,19 +235,6 @@ export default function Login() {
           color: var(--login-accent);
           outline: none;
         }
-        .login-demo {
-          color: #69778b;
-          background: #f6f8fb;
-          border: 1px solid #e1e7ef;
-          border-radius: 8px;
-          padding: 0.85rem 1rem;
-          font-size: 0.9rem;
-          font-weight: 700;
-          margin-bottom: 1.1rem;
-        }
-        .login-demo strong {
-          color: #202938;
-        }
         .login-error {
           color: #b42318;
           background: #fff3f0;
@@ -317,8 +304,8 @@ export default function Login() {
       <main className="login-page">
         <section className="login-shell" aria-labelledby="login-title">
           <div className="login-heading">
-            <h1 className="login-title" id="login-title">Welcome Back</h1>
-            <p className="login-subtitle">Sign in to access your live dashboard</p>
+            <h1 className="login-title" id="login-title">Create Account</h1>
+            <p className="login-subtitle">Sign up to access your live dashboard</p>
           </div>
 
           <div
@@ -343,9 +330,9 @@ export default function Login() {
 
             <form onSubmit={handleSubmit} noValidate>
               <div className="login-field">
-                <label className="login-label" htmlFor="login-username">Email Address</label>
+                <label className="login-label" htmlFor="signup-username">Email Address</label>
                 <input
-                  id="login-username"
+                  id="signup-username"
                   className="login-input"
                   type="email"
                   value={email}
@@ -360,15 +347,15 @@ export default function Login() {
               </div>
 
               <div className="login-field">
-                <label className="login-label" htmlFor="login-password">Password</label>
+                <label className="login-label" htmlFor="signup-password">Password</label>
                 <div className="login-input-wrap">
                   <input
-                    id="login-password"
+                    id="signup-password"
                     className="login-input has-toggle"
                     type={showPassword ? "text" : "password"}
                     value={password}
-                    placeholder="password123"
-                    autoComplete="current-password"
+                    placeholder="Min. 6 characters"
+                    autoComplete="new-password"
                     onChange={(event) => {
                       setPassword(event.target.value);
                       setError("");
@@ -401,12 +388,12 @@ export default function Login() {
 
               <button className="login-submit" type="submit" disabled={loading}>
                 {loading && <span className="login-spinner" />}
-                {loading ? "Signing in..." : `Sign in as ${meta.label}`}
+                {loading ? "Creating..." : `Sign Up as ${meta.label}`}
               </button>
 
               <div style={{ textAlign: "center", marginTop: "1.25rem", fontSize: "0.95rem" }}>
-                <span style={{ color: "#64748b" }}>Don't have an account? </span>
-                <Link to="/signup" style={{ color: "var(--login-accent)", fontWeight: "bold", textDecoration: "none" }}>Sign up</Link>
+                <span style={{ color: "#64748b" }}>Already have an account? </span>
+                <Link to="/login" style={{ color: "var(--login-accent)", fontWeight: "bold", textDecoration: "none" }}>Log in</Link>
               </div>
             </form>
           </div>

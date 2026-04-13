@@ -48,6 +48,13 @@ const patientSchema = new mongoose.Schema(
       trim:     true,
     },
 
+    // ── User association ──────────────────────────────────────────────
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: false, // Optional for backward compatibility with old data
+    },
+
     // ── Core patient information ──────────────────────────────────────
     name: {
       type:      String,

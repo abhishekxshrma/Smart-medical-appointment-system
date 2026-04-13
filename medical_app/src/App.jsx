@@ -1,26 +1,40 @@
-﻿
+
 import React, { useState, useEffect, useContext, createContext, useCallback, useRef } from "react";
 import { Navigate, useLocation, useNavigate as useRouterNavigate } from "react-router-dom";
 import RoleSelect from "./pages/RoleSelect";
 import Login from "./pages/Login";
+import Signup from "./pages/Signup";
 import { ROLE_STORAGE_KEY } from "./pages/RoleSelect";
 /* ============================================================
    API LAYER - all fetch calls in one place
    Change BASE_URL to point at your backend
    ============================================================ */
-const BASE_URL="/api";
+const BASE_URL="http://localhost:5000/api";
 
 async function apiFetch(path,options={}){
-  const res=await fetch(`${BASE_URL}${path}`,{
-    headers:{"Content-Type":"application/json"},
-    ...options
-  });
-  const json=await res.json();
-  if(!res.ok||!json.success) throw new Error(json.message||`Error ${res.status}`);
-  return json.data;
+  const headers = { "Content-Type": "application/json" };
+  const token = localStorage.getItem("mediqueue_token");
+  if(token) headers.Authorization = `Bearer ${token}`;
+
+  console.log(`[Frontend] Calling API: ${BASE_URL}${path}`, options);
+  
+  try {
+    const res=await fetch(`${BASE_URL}${path}`,{
+      headers,
+      ...options
+    });
+    const json=await res.json();
+    if(!res.ok||!json.success) throw new Error(json.message||`Error ${res.status}`);
+    return "data" in json ? json.data : json;
+  } catch (err) {
+    console.error(`[Frontend] API Error on ${path}:`, err);
+    throw err;
+  }
 }
 
-const api={
+export const api={
+  login:(body)=>apiFetch("/auth/login",{method:"POST",body:JSON.stringify(body)}),
+  signup:(body)=>apiFetch("/auth/signup",{method:"POST",body:JSON.stringify(body)}),
   getPatients:(params={})=>{
     const q=new URLSearchParams(params).toString();
     return apiFetch(`/patients${q?"?"+q:""}`);
@@ -78,6 +92,7 @@ const AUTH_STORAGE_KEY="mediqueue_auth_role";
 const PATH_TO_PAGE={
   "/":"home",
   "/login":"login",
+  "/signup":"signup",
   "/home":"home",
   "/roles":"roleSelect",
   "/patient/register":"form",
@@ -88,6 +103,7 @@ const PATH_TO_PAGE={
 const PAGE_TO_PATH={
   roleSelect:"/roles",
   login:"/login",
+  signup:"/signup",
   home:"/home",
   form:"/patient/register",
   patientDash:"/patient",
@@ -108,6 +124,7 @@ function AppProvider({children}){
   const logout=useCallback(()=>{
     localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem(ROLE_STORAGE_KEY);
+    localStorage.removeItem("mediqueue_token");
     setCurrentPatient(null);
     routerNavigate("/");
     window.scrollTo(0,0);
@@ -804,6 +821,7 @@ function Router(){
   const pages={
     roleSelect:<RoleSelect/>,
     login:<Login/>,
+    signup:<Signup/>,
     home:<Home/>,
     form:<ProtectedPage role="patient"><PatientForm/></ProtectedPage>,
     patientDash:<ProtectedPage role="patient"><PatientDashboard/></ProtectedPage>,

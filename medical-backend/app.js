@@ -7,6 +7,7 @@
  */
 
 const express         = require("express");
+const cors            = require("cors");
 const logger          = require("./middleware/logger");
 const { dbStatus }    = require("./config/database");
 
@@ -16,6 +17,7 @@ const app = express();
 // Global Middleware
 // ---------------------------------------------------------------------------
 
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(logger);
@@ -25,7 +27,10 @@ app.use(logger);
 // ---------------------------------------------------------------------------
 
 const patientRoutes = require("./routes/patientRoutes");
+const authRoutes = require("./routes/authRoutes");
+
 app.use("/api/patients", patientRoutes);
+app.use("/api/auth", authRoutes);
 
 // ---------------------------------------------------------------------------
 // Health Check — now includes MongoDB connection status
@@ -53,6 +58,10 @@ app.get("/", (req, res) => {
     database: "MongoDB (Mongoose)",
     endpoints: {
       health:   "GET  /health",
+      auth: {
+        signup:   "POST /api/auth/signup",
+        login:    "POST /api/auth/login",
+      },
       patients: {
         list:     "GET  /api/patients",
         register: "POST /api/patients",

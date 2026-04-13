@@ -71,6 +71,11 @@ async function getAllPatients(req, res) {
       filter.department = { $regex: new RegExp(`^${department}$`, "i") };
     }
 
+    // Filter to ensure patients only see their own appointments
+    if (req.user && req.user.role === "patient") {
+      filter.userId = req.user.id;
+    }
+
     // Fetch from MongoDB — Mongoose Documents serialise with our toJSON transform
     const patients = await Patient.find(filter);
     const sorted   = sortByPriority(patients);
@@ -124,6 +129,7 @@ async function registerPatient(req, res) {
     // Persist to MongoDB
     const newPatient = await Patient.create({
       token,
+      userId:         req.user ? req.user.id : undefined,
       name:           name.trim(),
       age:            parsedAge,
       symptoms:       symptoms.trim(),
