@@ -93,7 +93,7 @@ const HIGH_PRIORITY_KEYWORDS = [
  * @returns {boolean}
  */
 function matchesKeyword(text, keywords) {
-  const lower = text.toLowerCase();
+  const lower = String(text || "").toLowerCase();
   return keywords.some((kw) => lower.includes(kw.toLowerCase()));
 }
 

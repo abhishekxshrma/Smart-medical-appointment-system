@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
-import { useApp } from "../context/useApp";
+import { useApp } from "../context/AppContext";
 
 const DEPARTMENTS = [
   "General Medicine", "Cardiology", "Orthopedics", "Dermatology",
@@ -24,6 +24,68 @@ function Field({ label, error, children }) {
   );
 }
 
+// ── NEW: AiResultCard ────────────────────────────────────────────────────────
+/**
+ * Displays the AI-assigned priority and advice after form submission.
+ * Colour-coded: emergency → red, high → orange, normal → green.
+ * Self-contained — no props other than priority + advice.
+ */
+const AI_STYLES = {
+  emergency: {
+    wrapper: "bg-red-50 border-red-300",
+    badge:   "bg-red-100 text-red-700 border-red-300",
+    icon:    "text-red-500",
+    advice:  "text-red-700",
+    label:   "EMERGENCY",
+  },
+  high: {
+    wrapper: "bg-orange-50 border-orange-300",
+    badge:   "bg-orange-100 text-orange-700 border-orange-300",
+    icon:    "text-orange-500",
+    advice:  "text-orange-700",
+    label:   "HIGH PRIORITY",
+  },
+  normal: {
+    wrapper: "bg-green-50 border-green-300",
+    badge:   "bg-green-100 text-green-700 border-green-300",
+    icon:    "text-green-600",
+    advice:  "text-green-700",
+    label:   "NORMAL",
+  },
+};
+
+function AiResultCard({ priority, advice }) {
+  const s = AI_STYLES[priority] || AI_STYLES.normal;
+
+  return (
+    <div className={`mt-2 rounded-xl border-2 p-4 text-left ${s.wrapper}`}>
+      {/* Header row */}
+      <div className="flex items-center gap-2 mb-3">
+        {/* Brain / AI icon */}
+        <svg className={`w-5 h-5 flex-shrink-0 ${s.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round"
+            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+        </svg>
+        <span className="text-xs font-bold text-slate-500 tracking-widest uppercase">
+          AI Symptom Analysis
+        </span>
+      </div>
+
+      {/* Priority badge */}
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${s.badge}`}>
+          {s.label}
+        </span>
+      </div>
+
+      {/* Advice */}
+      <p className={`text-sm font-semibold ${s.advice}`}>
+        {advice}
+      </p>
+    </div>
+  );
+}
+
 export default function PatientForm() {
   const navigate = useNavigate();
   const { addPatient } = useApp();
@@ -33,6 +95,8 @@ export default function PatientForm() {
     name: "", age: "", symptoms: "", department: "General Medicine", priority: "normal",
   });
   const [errors, setErrors] = useState({});
+  // ── NEW: holds the AI analysis result returned from the backend ──────────
+  const [aiResult, setAiResult] = useState(null); // { priority, advice } | null
 
   const validate = () => {
     const e = {};
@@ -56,10 +120,40 @@ export default function PatientForm() {
     setStep((s) => s + 1);
   };
 
-  const handleSubmit = () => {
-    addPatient(form);
+  const handleSubmit = async () => {
+    // ── CHANGED: call the real backend so AI analysis runs server-side ──────
+    try {
+      const formattedSymptoms = Array.isArray(form.symptoms) ? form.symptoms.join(", ") : String(form.symptoms || "");
+      
+      const res = await fetch("http://localhost:5000/api/patients", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          name:       form.name.trim(),
+          age:        Number(form.age),
+          symptoms:   formattedSymptoms.trim(),
+          department: form.department,
+        }),
+      });
+      const json = await res.json();
+      console.log("[Frontend] API Response:", json);
+
+      if (json.success) {
+        // Extract the AI result fields returned by the backend
+        const { priority, aiAdvice } = json.data;
+        setAiResult({ priority, advice: aiAdvice });
+
+        // Also update the local context so PatientDashboard reflects the new patient
+        addPatient({ ...form, priority });
+      }
+    } catch {
+      // If the backend is unreachable fall back to local context only
+      addPatient(form);
+    }
+
     setSubmitted(true);
-    setTimeout(() => navigate("/patient/dashboard"), 1500);
+    // Give user time to read the AI result before redirecting
+    setTimeout(() => navigate("/patient/dashboard"), 3500);
   };
 
   return (
@@ -103,7 +197,10 @@ export default function PatientForm() {
                   </svg>
                 </div>
                 <h3 className="text-xl font-bold text-slate-800 mb-2">Appointment Booked!</h3>
-                <p className="text-slate-500 text-sm">Redirecting to your dashboard...</p>
+                <p className="text-slate-500 text-sm mb-6">Redirecting to your dashboard...</p>
+
+                {/* ── NEW: AI Analysis Result card ─────────────────────── */}
+                {aiResult && <AiResultCard priority={aiResult.priority} advice={aiResult.advice} />}
               </div>
             ) : step === 1 ? (
               <div className="space-y-5">

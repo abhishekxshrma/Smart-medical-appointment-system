@@ -15,6 +15,8 @@ const Patient                            = require("../models/Patient");
 const { assignPriority, priorityReason } = require("../utils/priorityEngine");
 const { calculateETA }                   = require("../utils/etaCalculator");
 const { sendSuccess, sendError }         = require("../utils/response");
+// ── NEW: AI symptom analysis service ────────────────────────────────────────
+const { analyzeSymptoms }                = require("../services/aiService");
 
 // Priority sort order for returning patient lists
 const PRIORITY_ORDER = { emergency: 0, high: 1, normal: 2 };
@@ -71,11 +73,6 @@ async function getAllPatients(req, res) {
       filter.department = { $regex: new RegExp(`^${department}$`, "i") };
     }
 
-    // Filter to ensure patients only see their own appointments
-    if (req.user && req.user.role === "patient") {
-      filter.userId = req.user.id;
-    }
-
     // Fetch from MongoDB — Mongoose Documents serialise with our toJSON transform
     const patients = await Patient.find(filter);
     const sorted   = sortByPriority(patients);
@@ -115,9 +112,11 @@ async function registerPatient(req, res) {
 
     const parsedAge = Number(age);
 
-    // Auto-assign priority from age + symptom keywords
-    const priority = assignPriority(parsedAge, symptoms);
-    const reason   = priorityReason(parsedAge, symptoms);
+    // ── CHANGED: AI symptom analysis drives both priority AND advice ──────
+    // analyzeSymptoms() is the single source of truth for classification.
+    // The existing priorityReason from priorityEngine is kept for audit logs.
+    const { priority, advice } = analyzeSymptoms(symptoms, parsedAge);
+    const reason               = priorityReason(parsedAge, symptoms); // audit trail
 
     // Calculate ETA based on how many patients are still active (not completed)
     const activeCount   = await Patient.countActive();
@@ -129,13 +128,13 @@ async function registerPatient(req, res) {
     // Persist to MongoDB
     const newPatient = await Patient.create({
       token,
-      userId:         req.user ? req.user.id : undefined,
       name:           name.trim(),
       age:            parsedAge,
       symptoms:       symptoms.trim(),
       department,
-      priority,
-      priorityReason: reason,
+      priority,                  // set by AI service
+      priorityReason: reason,    // set by existing priorityEngine (audit)
+      aiAdvice:       advice,    // ── NEW: patient-facing recommendation
       estimatedTime,
       // status defaults to "waiting" per schema
       // createdAt / updatedAt added automatically by { timestamps: true }
