@@ -4,6 +4,7 @@ import { Navigate, useLocation, useNavigate as useRouterNavigate } from "react-r
 import RoleSelect from "./pages/RoleSelect";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+const Profile = React.lazy(() => import("./pages/Profile"));
 import { ROLE_STORAGE_KEY } from "./pages/RoleSelect";
 /* ============================================================
    API LAYER - all fetch calls in one place
@@ -11,8 +12,11 @@ import { ROLE_STORAGE_KEY } from "./pages/RoleSelect";
    ============================================================ */
 const BASE_URL="http://localhost:5000/api";
 
-async function apiFetch(path,options={}){
-  const headers = { "Content-Type": "application/json" };
+export async function apiFetch(path,options={}){
+  const headers = {};
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
   const token = localStorage.getItem("mediqueue_token");
   if(token) headers.Authorization = `Bearer ${token}`;
 
@@ -42,10 +46,21 @@ export const api={
   registerPatient:(body)=>apiFetch("/patients",{method:"POST",body:JSON.stringify(body)}),
   verifyPatient:(id)=>apiFetch(`/patients/${id}/verify`,{method:"PUT"}),
   startConsultation:(id)=>apiFetch(`/patients/${id}/start`,{method:"PUT"}),
-  completeConsultation:(id)=>apiFetch(`/patients/${id}/complete`,{method:"PUT"}),
+  completeConsultation:(id, body)=>apiFetch(`/patients/${id}/complete`,{method:"PUT",body:JSON.stringify(body)}),
+  cancelPatient:(id)=>apiFetch(`/patients/${id}/cancel`,{method:"PUT"}),
+  getMyPatient:()=>apiFetch("/patients/my"),
+  getPatientHistory:()=>apiFetch("/patients/history"),
+  getDoctorPatientHistory:(id)=>apiFetch(`/patients/${id}/history`),
+  getProfile:()=>apiFetch("/user/profile"),
+  updateProfile:(body)=>apiFetch("/user/profile",{method:"PUT",body}),
 };
 
-function formatTurnEstimate(estimatedTime){
+function formatTurnEstimate(patient){
+  if(!patient)return "Turn time not assigned";
+  if(patient.status==="in-progress")return "Doctor is checking you now";
+  if(patient.status==="completed")return "Checkup completed";
+  if(patient.status==="cancelled")return "Appointment cancelled";
+  const estimatedTime=patient.estimatedTime;
   if(!estimatedTime)return "Turn time not assigned";
   const match=String(estimatedTime).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
   if(!match)return `Turn expected at ${estimatedTime}`;
@@ -121,17 +136,30 @@ function AppProvider({children}){
     routerNavigate(PAGE_TO_PATH[p]||"/home");
     window.scrollTo(0,0);
   },[routerNavigate]);
+  const[userProfile,setUserProfile]=useState(null);
+  const[profileSidebarOpen,setProfileSidebarOpen]=useState(false);
+  
+  useEffect(() => {
+    if (authRole) {
+      api.getProfile()
+        .then(data => setUserProfile(data))
+        .catch(err => console.error("Failed to load profile:", err));
+    }
+  }, [authRole]);
+
   const logout=useCallback(()=>{
     localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem(ROLE_STORAGE_KEY);
     localStorage.removeItem("mediqueue_token");
     setCurrentPatient(null);
+    setUserProfile(null);
+    setProfileSidebarOpen(false);
     routerNavigate("/");
     window.scrollTo(0,0);
   },[routerNavigate]);
-  return <AppCtx.Provider value={{page,navigate,authRole,logout,currentPatient,setCurrentPatient}}>{children}</AppCtx.Provider>;
+  return <AppCtx.Provider value={{page,navigate,authRole,logout,currentPatient,setCurrentPatient,userProfile,setUserProfile,profileSidebarOpen,setProfileSidebarOpen}}>{children}</AppCtx.Provider>;
 }
-const useApp=()=>useContext(AppCtx);
+export const useApp=()=>useContext(AppCtx);
 
 /* ============================================================
    SHARED COMPONENTS
@@ -163,6 +191,7 @@ function StatusBadge({status}){
     verified:{cls:"bvf",dot:"dv",label:"Verified"},
     "in-progress":{cls:"bp",dot:"db",label:"In Progress"},
     completed:{cls:"bc",dot:"de",label:"Completed"},
+    cancelled:{cls:"bcd",dot:"de",label:"Cancelled"},
   };
   const s=m[status]||m.waiting;
   return <span className={`badge ${s.cls}`}><span className={`dot ${s.dot}`}/>{s.label}</span>;
@@ -211,8 +240,8 @@ function PollBadge(){
   );
 }
 
-function Navbar(){
-  const{navigate,page,authRole,logout}=useApp();
+export function Navbar(){
+  const{navigate,page,authRole,logout,userProfile,profileSidebarOpen,setProfileSidebarOpen}=useApp();
   const roleLinks={
     patient:[{label:"Patient",p:"patientDash"}],
     doctor:[{label:"Doctor",p:"doctorDash"}],
@@ -231,7 +260,15 @@ function Navbar(){
             <button key={l.p} className={`nl ${page===l.p?"active":""}`} onClick={()=>navigate(l.p)}>{l.label}</button>
           ))}
           {authRole==="patient"&&<button className="ncta" onClick={()=>navigate("form")}>Book Appointment</button>}
-          {authRole&&<button className="nl" onClick={logout}>Logout</button>}
+          {authRole&&(
+             <div onClick={()=>setProfileSidebarOpen(!profileSidebarOpen)} style={{width:"2rem",height:"2rem",borderRadius:"9999px",background:"#e2e8f0",overflow:"hidden",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #cbd5e1",marginLeft:".5rem",boxShadow:profileSidebarOpen?"0 0 0 2px #0d9488":""}}>
+               {userProfile?.profileImage ? (
+                  <img src={`http://localhost:5000${userProfile.profileImage}`} alt="Profile" style={{width:"100%",height:"100%",objectFit:"cover"}} />
+                ) : (
+                  <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                )}
+             </div>
+          )}
         </div>
       </div>
     </nav>
@@ -245,7 +282,14 @@ function Home(){
   const{navigate,authRole}=useApp();
   const{data,loading}=useFetch(()=>api.getPatients());
   const wc=data?data.patients.filter(p=>p.status==="waiting").length:"-";
-  const rolePage={patient:"form",doctor:"doctorDash",compounder:"compounderDash"};
+  
+  useEffect(() => {
+    if (authRole === "patient") navigate("patientDash");
+    else if (authRole === "doctor") navigate("doctorDash");
+    else if (authRole === "compounder") navigate("compounderDash");
+  }, [authRole, navigate]);
+
+  const rolePage={patient:"patientDash",doctor:"doctorDash",compounder:"compounderDash"};
   const selectRole=(role)=>{
     if(authRole&&authRole!==role){
       window.alert("Please logout before switching to another portal.");
@@ -324,12 +368,17 @@ function FF({label,error,children}){
 }
 
 function PatientForm(){
-  const{navigate,setCurrentPatient}=useApp();
+  const{navigate,setCurrentPatient,userProfile}=useApp();
   const[step,setStep]=useState(1);
   const[submitting,setSubmitting]=useState(false);
   const[submitErr,setSubmitErr]=useState(null);
   const[done,setDone]=useState(false);
-  const[form,setForm]=useState({name:"",age:"",symptoms:"",department:"General Medicine"});
+  const[form,setForm]=useState({
+    name:userProfile?.name||"",
+    age:userProfile?.age||"",
+    symptoms:"",
+    department:"General Medicine"
+  });
   const[errors,setErrors]=useState({});
 
   const validate=()=>{
@@ -462,13 +511,19 @@ function PatientForm(){
 function PatientDashboard(){
   const{currentPatient,navigate}=useApp();
   const{data,loading,error,refetch}=useFetch(()=>api.getPatients(),15000);
+  const{data:myData}=useFetch(()=>api.getMyPatient());
+  const{data:myHistory, loading:historyLoading}=useFetch(()=>api.getPatientHistory());
   const patients=data?.patients??[];
-  const patient=currentPatient
-    ?patients.find(p=>p.id===currentPatient.id)||currentPatient
-    :patients.find(p=>p.status==="waiting");
+  
+  const resolvedMyPatient = myData || currentPatient;
+  const patient = resolvedMyPatient 
+    ? (patients.find(p=>p.id===resolvedMyPatient.id) || resolvedMyPatient)
+    : null;
+    
   const patientTime=patient?.registeredAt?new Date(patient.registeredAt).getTime():Number.POSITIVE_INFINITY;
   const waitingBefore=patients.filter(p=>p.status!=="completed"&&new Date(p.registeredAt||0).getTime()<patientTime).length;
   const queueList=patients.filter(p=>p.status!=="completed");
+  const turnStatus=patient?formatTurnEstimate(patient):"Turn time not assigned";
   return(
     <div className="fadein">
       <Navbar/>
@@ -498,19 +553,19 @@ function PatientDashboard(){
         {patient&&(
           <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,2fr)",gap:"1.5rem",marginBottom:"2rem"}}>
             <div className="tcard">
-              <div className="tlabel">Your Token</div>
-              <div className="tnum">{patient.token}</div>
+              <div className="tlabel">Your Position in Queue</div>
+              <div className="tnum">{patient.position || "N/A"}</div>
               <div style={{marginTop:"1rem"}}><StatusBadge status={patient.status}/></div>
               {patient.priority==="emergency"&&<span className="badge bu" style={{marginTop:".5rem"}}>EMERGENCY</span>}
               {patient.priority==="high"&&<span className="badge bu" style={{marginTop:".5rem"}}>High Priority</span>}
-              <div style={{fontSize:".875rem",fontWeight:700,marginTop:"1rem"}}>{formatTurnEstimate(patient.estimatedTime)}</div>
-              <div className="thint">Keep this token for reference</div>
+              <div style={{fontSize:".875rem",fontWeight:700,marginTop:"1rem"}}>{turnStatus}</div>
+              <div className="thint">Token: {patient.token}</div>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:"1rem"}}>
               <div className="card" style={{padding:"1.5rem"}}>
                 <p style={{fontSize:".7rem",fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Appointment Details</p>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"1rem"}}>
-                  {[{l:"Name",v:patient.name},{l:"Age",v:`${patient.age} years`},{l:"Department",v:patient.department},{l:"Priority",v:patient.priority},{l:"Estimated Time",v:patient.estimatedTime},{l:"Turn Status",v:formatTurnEstimate(patient.estimatedTime)},{l:"Ahead of you",v:waitingBefore}].map(r=>(
+                  {[{l:"Name",v:patient.name},{l:"Age",v:`${patient.age} years`},{l:"Department",v:patient.department},{l:"Priority",v:patient.priority},{l:"Estimated Time",v:patient.estimatedTime},{l:"Turn Status",v:turnStatus},{l:"Ahead of you",v:patient.status==="in-progress"?0:waitingBefore}].map(r=>(
                     <div key={r.l}>
                       <p style={{fontSize:".75rem",color:"#94a3b8",fontWeight:500,marginBottom:".125rem"}}>{r.l}</p>
                       <p style={{fontSize:".875rem",fontWeight:700,color:"#0f172a",textTransform:r.l==="Priority"?"capitalize":""}}>{r.v}</p>
@@ -547,7 +602,7 @@ function PatientDashboard(){
               :queueList.map(p=>(
                 <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:".875rem 1.5rem",borderBottom:"1px solid #f8fafc",background:p.id===patient?.id?"#f0fdfa":""}}>
                   <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
-                    <span style={{fontWeight:900,fontSize:".875rem",color:p.id===patient?.id?"#0d9488":"#94a3b8"}}>{p.token}</span>
+                    <span style={{fontWeight:900,fontSize:".875rem",color:p.id===patient?.id?"#0d9488":"#94a3b8"}}>{p.position || p.token}</span>
                     <div>
                       <p style={{fontSize:".875rem",fontWeight:600,color:"#1e293b"}}>{p.id===patient?.id?`${p.name} (You)`:p.name}</p>
                       <p style={{fontSize:".75rem",color:"#94a3b8"}}>{p.department}</p>
@@ -560,6 +615,39 @@ function PatientDashboard(){
                 </div>
               ))
           }
+        </div>
+        
+        {/* Previous Visits Section */}
+        <div style={{marginTop:"3rem"}}>
+          <h2 style={{fontSize:"1.25rem",fontWeight:800,color:"#0f172a",marginBottom:"1rem"}}>Previous Visits</h2>
+          {historyLoading ? (
+            <div className="card" style={{padding:"2rem"}}><div className="skel" style={{height:"4rem"}}/></div>
+          ) : !myHistory || myHistory.length === 0 ? (
+            <div className="card" style={{padding:"2rem",textAlign:"center",color:"#94a3b8",fontSize:".875rem"}}>
+              No previous records found.
+            </div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:"1rem"}}>
+              {myHistory.map(h => (
+                <div key={h.id} className="card" style={{padding:"1.5rem",display:"flex",flexDirection:"column",gap:".75rem",borderLeft:h.priority==="emergency"?"4px solid #ef4444":h.priority==="high"?"4px solid #f59e0b":"4px solid #e2e8f0"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
+                      <span style={{fontWeight:800,color:"#374151"}}>{new Date(h.createdAt).toLocaleDateString()}</span>
+                      <StatusBadge status={h.status}/>
+                    </div>
+                    <span style={{fontSize:".8125rem",color:"#64748b",fontWeight:600}}>{h.department}</span>
+                  </div>
+                  <p style={{fontSize:".875rem",color:"#475569"}}><strong style={{color:"#1e293b"}}>Symptoms:</strong> {h.symptoms}</p>
+                  {h.diagnosis && (
+                    <div style={{marginTop:".5rem",padding:".75rem",background:"#f8fafc",borderRadius:".5rem",border:"1px solid #e2e8f0"}}>
+                      <p style={{fontSize:".8125rem",color:"#64748b",fontWeight:700,textTransform:"uppercase",marginBottom:".25rem"}}>Doctor's Diagnosis</p>
+                      <p style={{fontSize:".875rem",color:"#0f172a",fontWeight:500}}>{h.diagnosis}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -587,13 +675,37 @@ function DoctorDashboard(){
     return mf&&ms;
   });
 
+  const[historyModal,setHistoryModal]=useState(null); // stores {id, name}
+  const[historyData,setHistoryData]=useState(null);
+  const[historyLoading,setHistoryLoading]=useState(false);
+
   const handleAction=async(p)=>{
-    const m={verified:()=>api.startConsultation(p.id),"in-progress":()=>api.completeConsultation(p.id)};
-    const fn=m[p.status];if(!fn)return;
-    setActLoad(p.id);setActErr(null);
-    try{await fn();await refetch();}
-    catch(e){setActErr(`${p.token}: ${e.message}`);}
-    finally{setActLoad(null);}
+    if(p.status==="in-progress"){
+      const diagnosis = window.prompt(`Enter diagnosis for ${p.name}:`);
+      if(diagnosis === null) return; // User cancelled
+      setActLoad(p.id);setActErr(null);
+      try{await api.completeConsultation(p.id, { diagnosis });await refetch();}
+      catch(e){setActErr(`${p.token}: ${e.message}`);}
+      finally{setActLoad(null);}
+    } else if (p.status==="verified") {
+      setActLoad(p.id);setActErr(null);
+      try{await api.startConsultation(p.id);await refetch();}
+      catch(e){setActErr(`${p.token}: ${e.message}`);}
+      finally{setActLoad(null);}
+    }
+  };
+
+  const openHistory = async (p) => {
+    setHistoryModal({ id: p.id, name: p.name });
+    setHistoryLoading(true);
+    try {
+      const hist = await api.getDoctorPatientHistory(p.id);
+      setHistoryData(hist);
+    } catch (e) {
+      setActErr(`Failed to load history: ${e.message}`);
+    } finally {
+      setHistoryLoading(false);
+    }
   };
 
   const ABTN={
@@ -601,6 +713,7 @@ function DoctorDashboard(){
     verified:{label:"Start Consultation",cls:"bb"},
     "in-progress":{label:"Mark Complete",cls:"be"},
     completed:{label:"Done",cls:"bg"},
+    cancelled:{label:"Cancelled",cls:"bg"},
   };
 
   return(
@@ -636,7 +749,7 @@ function DoctorDashboard(){
           </div>
           <div style={{overflowX:"auto"}}>
             <table>
-              <thead><tr><th>Token</th><th>Patient</th><th>Department</th><th>Symptoms</th><th>Status</th><th>Action</th></tr></thead>
+              <thead><tr><th>Position</th><th>Patient</th><th>Department</th><th>Symptoms</th><th>Status</th><th>Action</th></tr></thead>
               <tbody>
                 {loading?<TableSkeleton rows={5} cols={6}/>
                   :filtered.length===0?<tr><td colSpan={6} style={{textAlign:"center",padding:"3rem",color:"#94a3b8"}}>No patients match the filter</td></tr>
@@ -647,7 +760,8 @@ function DoctorDashboard(){
                     return(
                       <tr key={p.id} className={p.priority==="emergency"||p.priority==="high"?"pribar":""}>
                         <td>
-                          <span style={{fontWeight:900,color:"#374151"}}>{p.token}</span>
+                          <span style={{fontWeight:900,color:"#374151"}}>{p.position || p.token}</span>
+                          {p.status==="in-progress"&&<span className="badge bg" style={{marginLeft:".5rem",background:"#10b981",color:"#fff"}}>Now Serving</span>}
                           {p.priority==="emergency"&&<span className="badge bu" style={{marginLeft:".5rem"}}>EMERG</span>}
                           {p.priority==="high"&&<span className="badge bu" style={{marginLeft:".5rem"}}>Urgent</span>}
                         </td>
@@ -661,9 +775,14 @@ function DoctorDashboard(){
                         </td>
                         <td><StatusBadge status={p.status}/></td>
                         <td>
-                          <button className={`btn bsm ${btn.cls}`} onClick={()=>handleAction(p)} disabled={!canAct||isLoad}>
-                            {isLoad?<><span className="spin" style={{width:".875rem",height:".875rem"}}/>Loading...</>:btn.label}
-                          </button>
+                          <div style={{display:"flex",gap:".5rem",alignItems:"center"}}>
+                            <button className={`btn bsm ${btn.cls}`} onClick={()=>handleAction(p)} disabled={!canAct||isLoad}>
+                              {isLoad?<><span className="spin" style={{width:".875rem",height:".875rem"}}/>Loading...</>:btn.label}
+                            </button>
+                            <button className="btn bsm" style={{background:"#f1f5f9",color:"#475569",border:"1px solid #cbd5e1"}} onClick={()=>openHistory(p)}>
+                              History
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -674,6 +793,49 @@ function DoctorDashboard(){
           </div>
         </div>
       </div>
+      
+      {/* History Modal */}
+      {historyModal && (
+        <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,.6)",backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100,padding:"1rem"}}>
+          <div className="card" style={{width:"100%",maxWidth:"42rem",maxHeight:"85vh",display:"flex",flexDirection:"column"}}>
+            <div style={{padding:"1.5rem",borderBottom:"1px solid #e2e8f0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <h3 style={{fontSize:"1.25rem",fontWeight:800,color:"#0f172a"}}>{historyModal.name}'s Medical History</h3>
+                <p style={{fontSize:".875rem",color:"#64748b",marginTop:".25rem"}}>Past visits and diagnoses</p>
+              </div>
+              <button className="btn" style={{padding:".5rem",background:"#f1f5f9",color:"#64748b"}} onClick={()=>{setHistoryModal(null);setHistoryData(null);}}>Close</button>
+            </div>
+            <div style={{padding:"1.5rem",overflowY:"auto",flex:1}}>
+              {historyLoading ? (
+                <div style={{display:"flex",flexDirection:"column",gap:"1rem"}}>{[1,2].map(i=><div key={i} className="skel" style={{height:"6rem",borderRadius:".75rem"}}/>)}</div>
+              ) : !historyData || historyData.length === 0 ? (
+                <div style={{padding:"3rem",textAlign:"center",color:"#94a3b8"}}>No previous medical history available for this patient.</div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:"1rem"}}>
+                  {historyData.map(h => (
+                    <div key={h.id} style={{padding:"1.25rem",border:"1px solid #e2e8f0",borderRadius:".75rem",borderLeft:h.priority==="emergency"?"4px solid #ef4444":h.priority==="high"?"4px solid #f59e0b":"4px solid #e2e8f0"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".75rem"}}>
+                        <div style={{display:"flex",gap:".75rem",alignItems:"center"}}>
+                          <span style={{fontWeight:800,color:"#1e293b"}}>{new Date(h.createdAt).toLocaleDateString()}</span>
+                          <StatusBadge status={h.status}/>
+                        </div>
+                        <span style={{fontSize:".8125rem",color:"#64748b",fontWeight:600}}>{h.department}</span>
+                      </div>
+                      <p style={{fontSize:".875rem",color:"#475569",marginBottom:".5rem"}}><strong style={{color:"#1e293b"}}>Symptoms:</strong> {h.symptoms}</p>
+                      {h.diagnosis && (
+                        <div style={{background:"#f8fafc",padding:".75rem",borderRadius:".5rem",border:"1px solid #f1f5f9"}}>
+                          <p style={{fontSize:".75rem",fontWeight:700,color:"#64748b",textTransform:"uppercase",marginBottom:".25rem"}}>Diagnosis</p>
+                          <p style={{fontSize:".875rem",color:"#0f172a",fontWeight:500}}>{h.diagnosis}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -705,6 +867,18 @@ function CompounderDashboard(){
     try{
       await api.verifyPatient(p.id);
       setActOk(`${p.token} - ${p.name} verified successfully`);
+      await refetch();
+      setTimeout(()=>setActOk(null),3000);
+    }catch(e){setActErr(`${p.token}: ${e.message}`);}
+    finally{setActLoad(null);}
+  };
+
+  const handleCancel=async(p)=>{
+    if(!window.confirm(`Are you sure you want to cancel ${p.name} (${p.token})?`)) return;
+    setActLoad(p.id);setActErr(null);setActOk(null);
+    try{
+      await api.cancelPatient(p.id);
+      setActOk(`${p.token} - ${p.name} cancelled successfully`);
       await refetch();
       setTimeout(()=>setActOk(null),3000);
     }catch(e){setActErr(`${p.token}: ${e.message}`);}
@@ -761,7 +935,7 @@ function CompounderDashboard(){
               :filtered.length===0
                 ?<div style={{gridColumn:"1/-1",padding:"3rem",textAlign:"center",color:"#94a3b8",fontSize:".875rem"}}>No patients found</div>
                 :filtered.map(p=>(
-                  <PVCard key={p.id} patient={p} onVerify={()=>handleVerify(p)} isLoad={actLoad===p.id}/>
+                  <PVCard key={p.id} patient={p} onVerify={()=>handleVerify(p)} onCancel={()=>handleCancel(p)} isLoad={actLoad===p.id}/>
                 ))
             }
           </div>
@@ -771,12 +945,13 @@ function CompounderDashboard(){
   );
 }
 
-function PVCard({patient:p,onVerify,isLoad}){
+function PVCard({patient:p,onVerify,onCancel,isLoad}){
   const isV=p.status!=="waiting";
   const isU=p.priority==="emergency"||p.priority==="high";
-  const cc=isV?"pcv2":isU?"pcu":"pcd";
+  const isC=p.status==="cancelled";
+  const cc=isC?"pcd":isV?"pcv2":isU?"pcu":"pcd";
   return(
-    <div className={`pccard ${cc}`}>
+    <div className={`pccard ${cc}`} style={{opacity: isC ? 0.6 : 1}}>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:".75rem"}}>
         <div style={{display:"flex",alignItems:"center",gap:".5rem"}}>
           <span style={{fontSize:"1.125rem",fontWeight:900,color:"#1e293b"}}>{p.token}</span>
@@ -794,12 +969,19 @@ function PVCard({patient:p,onVerify,isLoad}){
       <p style={{fontSize:".75rem",color:"#94a3b8",marginBottom:"1rem",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{p.symptoms}</p>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <span style={{fontSize:".75rem",color:"#94a3b8"}}>ETA: {p.estimatedTime}</span>
-        {!isV&&(
-          <button className="btn bv bsm" onClick={onVerify} disabled={isLoad}>
-            {isLoad?<><span className="spin" style={{width:".75rem",height:".75rem"}}/>Verifying...</>:"Verify Arrival"}
-          </button>
+        {(!isV||(isV&&p.status!=="completed"))&&!isC&&(
+          <div style={{display:"flex",gap:".5rem",alignItems:"center"}}>
+            <button className="btn bsm" style={{background:"#fef2f2",color:"#ef4444",border:"1px solid #fecaca",padding:".25rem .5rem"}} onClick={onCancel} disabled={isLoad}>
+              {isLoad?<span className="spin" style={{width:".75rem",height:".75rem",borderColor:"#ef4444 transparent #ef4444 transparent"}}/>:"Cancel"}
+            </button>
+            {!isV&&<button className="btn bv bsm" onClick={onVerify} disabled={isLoad}>
+              {isLoad?<span className="spin" style={{width:".75rem",height:".75rem"}}/>:"Verify"}
+            </button>}
+            {isV&&<StatusBadge status={p.status}/>}
+          </div>
         )}
-        {isV&&<StatusBadge status={p.status}/>}
+        {isV&&p.status==="completed"&&<StatusBadge status={p.status}/>}
+        {isC&&<span className="badge" style={{background:"#e2e8f0",color:"#64748b",padding:".25rem .5rem",borderRadius:".5rem",fontSize:".75rem",fontWeight:700}}>Cancelled</span>}
       </div>
     </div>
   );
@@ -817,7 +999,7 @@ function ProtectedPage({role,children}){
    ROOT
    ============================================================ */
 function Router(){
-  const{page}=useApp();
+  const{page,authRole}=useApp();
   const pages={
     roleSelect:<RoleSelect/>,
     login:<Login/>,
@@ -828,7 +1010,14 @@ function Router(){
     doctorDash:<ProtectedPage role="doctor"><DoctorDashboard/></ProtectedPage>,
     compounderDash:<ProtectedPage role="compounder"><CompounderDashboard/></ProtectedPage>,
   };
-  return pages[page]||<Home/>;
+  return (
+    <>
+      {pages[page]||<Home/>}
+      <React.Suspense fallback={null}>
+        {authRole && <Profile />}
+      </React.Suspense>
+    </>
+  );
 }
-export default function App(){ return <AppProvider><Router/></AppProvider>; }
 
+export default function App(){ return <AppProvider><Router/></AppProvider>; }

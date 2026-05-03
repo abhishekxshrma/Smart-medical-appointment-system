@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { ROLE_STORAGE_KEY } from "./RoleSelect";
-import { api } from "../App";
+import { api, apiFetch } from "../App";
 
 const ROLE_REDIRECT = {
-  patient: "/patient/register",
+  patient: "/patient",
   doctor: "/doctor",
   compounder: "/compounder",
 };
@@ -79,8 +79,10 @@ export default function Login() {
       localStorage.setItem("mediqueue_token", result.token);
       localStorage.setItem(AUTH_STORAGE_KEY, result.user.role);
       
+      const redirect = ROLE_REDIRECT[result.user.role] || "/home";
+
       // Navigate to respective dashboard
-      navigate(ROLE_REDIRECT[result.user.role] || "/home");
+      navigate(redirect);
     } catch (err) {
       setError(err.message || "Invalid email or password.");
     } finally {
