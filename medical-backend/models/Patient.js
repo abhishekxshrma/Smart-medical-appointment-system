@@ -21,7 +21,7 @@ const mongoose = require("mongoose");
 // Sub-constants (keep in sync with priorityEngine.js and validate.js)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const VALID_STATUSES    = ["waiting", "verified", "in-progress", "completed"];
+const VALID_STATUSES    = ["waiting", "verified", "in-progress", "completed", "cancelled"];
 const VALID_PRIORITIES  = ["normal", "high", "emergency"];
 const VALID_DEPARTMENTS = [
   "General Medicine",
@@ -129,6 +129,12 @@ const patientSchema = new mongoose.Schema(
       default: null,
     },
 
+    // ── Medical History ───────────────────────────────────────────────
+    diagnosis: {
+      type:    String,
+      default: "",
+    },
+
     completedAt: {
       type:    Date,
       default: null,
@@ -179,7 +185,7 @@ patientSchema.index({ createdAt: 1 });  // sort by registration time
  * Used by the ETA calculator to determine queue position.
  */
 patientSchema.statics.countActive = function () {
-  return this.countDocuments({ status: { $ne: "completed" } });
+  return this.countDocuments({ status: { $nin: ["completed", "cancelled"] } });
 };
 
 /**
@@ -202,6 +208,26 @@ patientSchema.statics.generateToken = async function () {
   const num = parseInt(last.token.replace("T-", ""), 10);
   const next = isNaN(num) ? 1 : num + 1;
   return `T-${String(next).padStart(3, "0")}`;
+};
+
+/**
+ * Get the dynamic queue position for a specific patient.
+ * Counts patients with status "waiting", "verified", "in-progress"
+ * sorted by createdAt (or token as fallback), returns index + 1
+ */
+patientSchema.statics.getQueuePosition = async function (patientId) {
+  // Find the target patient
+  const targetPatient = await this.findById(patientId);
+  if (!targetPatient) return null;
+
+  // Get all active patients (not completed)
+  const activePatients = await this.find({
+    status: { $in: ["waiting", "verified", "in-progress"] }
+  }).sort({ createdAt: 1 }); // Sort by registration time
+
+  // Find the position (1-based index)
+  const position = activePatients.findIndex(p => p._id.toString() === patientId) + 1;
+  return position > 0 ? position : null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

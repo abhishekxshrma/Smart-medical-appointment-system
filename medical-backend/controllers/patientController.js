@@ -77,9 +77,26 @@ async function getAllPatients(req, res) {
     const patients = await Patient.find(filter);
     const sorted   = sortByPriority(patients);
 
+    // Calculate dynamic queue positions for active patients
+    const activePatients = await Patient.find({
+      status: { $in: ["waiting", "verified", "in-progress"] }
+    }).sort({ createdAt: 1 });
+
+    // Add position to each patient
+    const patientsWithPosition = sorted.map(patient => {
+      const patientObj = patient.toObject();
+      if (["waiting", "verified", "in-progress"].includes(patient.status)) {
+        const position = activePatients.findIndex(p => p._id.toString() === patient._id.toString()) + 1;
+        patientObj.position = position;
+      } else {
+        patientObj.position = null; // Completed patients don't have a position
+      }
+      return patientObj;
+    });
+
     return sendSuccess(
       res,
-      { total: sorted.length, patients: sorted },
+      { total: patientsWithPosition.length, patients: patientsWithPosition },
       "Patients retrieved successfully"
     );
   } catch (err) {
@@ -111,6 +128,20 @@ async function registerPatient(req, res) {
     } = req.body;
 
     const parsedAge = Number(age);
+    const userId = req.user?.id;
+
+    if (userId) {
+      const existingPatient = await Patient.findOne({
+        userId,
+        status: { $in: ["waiting", "verified", "in-progress"] }
+      });
+      if (existingPatient) {
+        const position = await Patient.getQueuePosition(existingPatient._id);
+        const patientObj = existingPatient.toObject();
+        patientObj.position = position;
+        return sendSuccess(res, patientObj, "Existing active booking returned", 200);
+      }
+    }
 
     // ── CHANGED: AI symptom analysis drives both priority AND advice ──────
     // analyzeSymptoms() is the single source of truth for classification.
@@ -136,6 +167,7 @@ async function registerPatient(req, res) {
       priorityReason: reason,    // set by existing priorityEngine (audit)
       aiAdvice:       advice,    // ── NEW: patient-facing recommendation
       estimatedTime,
+      userId,
       // status defaults to "waiting" per schema
       // createdAt / updatedAt added automatically by { timestamps: true }
     });
@@ -152,6 +184,89 @@ async function registerPatient(req, res) {
       return sendError(res, "DUPLICATE_TOKEN", "Token collision — please retry", 409);
     }
     console.error("[registerPatient]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/patients/history
+// ---------------------------------------------------------------------------
+
+/**
+ * Get all past medical records for the logged-in patient user.
+ */
+async function getPatientHistory(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return sendError(res, "UNAUTHORIZED", "User not logged in", 401);
+
+    const history = await Patient.find({
+      userId,
+      status: { $in: ["completed", "cancelled"] }
+    }).sort({ createdAt: -1 });
+
+    return sendSuccess(res, history, "Patient history retrieved successfully", 200);
+  } catch (err) {
+    console.error("[getPatientHistory]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/patients/my
+// ---------------------------------------------------------------------------
+
+async function getMyPatient(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return sendError(res, "UNAUTHORIZED", "User not logged in", 401);
+    }
+    const existingPatient = await Patient.findOne({
+      userId,
+      status: { $in: ["waiting", "verified", "in-progress"] }
+    });
+    if (existingPatient) {
+      const position = await Patient.getQueuePosition(existingPatient._id);
+      const patientObj = existingPatient.toObject();
+      patientObj.position = position;
+      return sendSuccess(res, patientObj, "Active booking found", 200);
+    }
+    return sendSuccess(res, null, "No active booking", 200);
+  } catch (err) {
+    console.error("[getMyPatient]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/patients/:id/history
+// ---------------------------------------------------------------------------
+
+/**
+ * Get all past medical records for a specific patient's userId (used by doctors).
+ */
+async function getDoctorPatientHistory(req, res) {
+  try {
+    const targetPatient = await Patient.findById(req.params.id);
+    if (!targetPatient) {
+      return sendError(res, "NOT_FOUND", "Patient not found", 404);
+    }
+
+    if (!targetPatient.userId) {
+      // Patient has no linked account, so they have no extended history
+      return sendSuccess(res, [], "No history available", 200);
+    }
+
+    const history = await Patient.find({
+      userId: targetPatient.userId,
+      _id: { $ne: targetPatient._id }, // Exclude the current visit
+      status: { $in: ["completed", "cancelled"] }
+    }).sort({ createdAt: -1 });
+
+    return sendSuccess(res, history, "Doctor patient history retrieved successfully", 200);
+  } catch (err) {
+    console.error("[getDoctorPatientHistory]", err);
     return sendError(res, "SERVER_ERROR", err.message, 500);
   }
 }
@@ -298,12 +413,44 @@ async function completeConsultation(req, res) {
     }
 
     patient.status      = "completed";
+    patient.diagnosis   = req.body.diagnosis || ""; // Save doctor's diagnosis
     patient.completedAt = new Date();
     await patient.save();
 
     return sendSuccess(res, patient, `Consultation completed for patient ${patient.token}`);
   } catch (err) {
     console.error("[completeConsultation]", err);
+    return sendError(res, "SERVER_ERROR", err.message, 500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/patients/:id/cancel   (Compounder action)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compounder cancels a patient request.
+ * Transition: anything except completed -> cancelled
+ */
+async function cancelPatient(req, res) {
+  try {
+    const patient = await findPatientOrFail(req, res);
+    if (!patient) return;
+
+    if (patient.status === "completed") {
+      return sendError(
+        res,
+        "INVALID_TRANSITION",
+        `Cannot cancel consultation for status '${patient.status}'.`
+      );
+    }
+
+    patient.status = "cancelled";
+    await patient.save();
+
+    return sendSuccess(res, patient, `Patient ${patient.token} cancelled successfully`);
+  } catch (err) {
+    console.error("[cancelPatient]", err);
     return sendError(res, "SERVER_ERROR", err.message, 500);
   }
 }
@@ -316,4 +463,8 @@ module.exports = {
   verifyPatient,
   startConsultation,
   completeConsultation,
+  cancelPatient,
+  getMyPatient,
+  getPatientHistory,
+  getDoctorPatientHistory,
 };

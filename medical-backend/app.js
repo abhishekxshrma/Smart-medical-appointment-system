@@ -22,15 +22,20 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(logger);
 
+// Serve uploaded profile images
+app.use("/uploads", express.static("uploads"));
+
 // ---------------------------------------------------------------------------
 // API Routes
 // ---------------------------------------------------------------------------
 
 const patientRoutes = require("./routes/patientRoutes");
 const authRoutes = require("./routes/authRoutes");
+const userRoutes = require("./routes/userRoutes");
 
 app.use("/api/patients", patientRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/user", userRoutes);
 
 // ---------------------------------------------------------------------------
 // Health Check — now includes MongoDB connection status

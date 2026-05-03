@@ -18,7 +18,17 @@ const userSchema = new mongoose.Schema({
     type: String,
     enum: ["patient", "doctor", "compounder", "admin"],
     default: "patient",
-  }
+  },
+  // ── User Profile ───────────────────────────────────────────────
+  name: { type: String, default: "" },
+  age: { type: Number, default: null },
+  gender: { type: String, enum: ["male", "female", "other", ""], default: "" },
+  phone: { type: String, default: "" },
+  address: { type: String, default: "" },
+  bloodGroup: { type: String, default: "" },
+  allergies: { type: String, default: "" },
+  medicalHistory: { type: String, default: "" },
+  profileImage: { type: String, default: "" }
 }, { timestamps: true });
 
 // Pre-save hook to hash password

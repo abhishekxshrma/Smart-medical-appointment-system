@@ -34,6 +34,10 @@ const {
   verifyPatient,
   startConsultation,
   completeConsultation,
+  cancelPatient,
+  getMyPatient,
+  getPatientHistory,
+  getDoctorPatientHistory,
 } = require("../controllers/patientController");
 
 // Require authentication for all patient routes
@@ -51,6 +55,18 @@ router.get("/", getAllPatients);
 // Register a new patient. Body is validated before reaching the controller.
 router.post("/", validateNewPatient, registerPatient);
 
+// GET /api/patients/my
+// Fetch current user's active booking
+router.get("/my", getMyPatient);
+
+// GET /api/patients/history
+// Fetch logged-in user's past medical history
+router.get("/history", getPatientHistory);
+
+// GET /api/patients/:id/history
+// Fetch history of specific patient (for doctors)
+router.get("/:id/history", getDoctorPatientHistory);
+
 // GET /api/patients/:id
 // Fetch one patient by UUID.
 router.get("/:id", getPatientById);
@@ -63,6 +79,10 @@ router.get("/:id", getPatientById);
 // Compounder confirms the patient has physically arrived.
 // Transition: waiting → verified
 router.put("/:id/verify", verifyPatient);
+
+// PUT /api/patients/:id/cancel
+// Compounder cancels a patient request.
+router.put("/:id/cancel", cancelPatient);
 
 // ---------------------------------------------------------------------------
 // Doctor Actions
