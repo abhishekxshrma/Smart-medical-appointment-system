@@ -172,7 +172,8 @@ npm run dev
 ## 👨‍💻 Author
 
 Abhishek Sharma
-GitHub: [https://github.com/akshit-jareat](https://github.com/abhishekxshrma)
+GitHub: https://github.com/abhishekxshrma
+
 
 ---
 
