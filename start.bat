@@ -1,0 +1,6 @@
+@echo off
+echo Starting MediQueue Backend (Port 5000)...
+start cmd /k "cd medical-backend && npm run dev"
+echo Starting MediQueue Frontend (Port 5173)...
+start cmd /k "cd medical_app && npm run dev"
+echo Done! Both services are now starting in separate command prompt windows.

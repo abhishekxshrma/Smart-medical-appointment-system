@@ -1,0 +1,13 @@
+{
+  "name": "smart-medical-root",
+  "version": "1.0.0",
+  "description": "Smart Medical Appointment System Root",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install --prefix medical-backend && npm install --prefix medical_app",
+    "start": "concurrently \"npm run dev --prefix medical-backend\" \"npm run dev --prefix medical_app\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
