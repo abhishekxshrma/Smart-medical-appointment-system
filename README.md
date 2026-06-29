@@ -171,8 +171,8 @@ npm run dev
 
 ## 👨‍💻 Author
 
-**Your Name**
-GitHub: https://github.com/akshit-jareat
+Abhishek Sharma
+GitHub: [https://github.com/akshit-jareat](https://github.com/abhishekxshrma)
 
 ---
 
